@@ -1,0 +1,9 @@
+{
+    "profiles": {
+        "Default": {
+            "commandName": "Project",
+            "commandLineArgs": "MyFirstArgument MySecondArgument",
+            "workingDirectory": "D:\\contract-analysis-multi-agents\\src",
+        }
+    }
+}
