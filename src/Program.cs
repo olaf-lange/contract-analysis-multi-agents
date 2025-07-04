@@ -121,16 +121,22 @@ public class Program
         var thread = runtime.GetThreadsForAgent(orchestrationResultTopic, agent.Name!).First();
         var run = (await agentsClient.Runs.GetRunsAsync(thread.Id).ToListAsync()).First();
 
-        logger.LogInformation("Creating Agent Evaluation for thread {ThreadId} with run {RunId}", thread.Id, run.Id);
-        var response = evaluationsClient.CreateAgentEvaluation(
-            new AgentEvaluationRequest(run.Id, evaluators, appInsightsConnectionString)
-            {
-                ThreadId = thread.Id,
-                SamplingConfiguration = samplingConfig,
-            }
-        );
-
-        logger.LogInformation("Agent Evaluation created successfully with ID {EvaluationId}", response.Value.Id);
+        logger.LogInformation("Try creating Agent Evaluation for thread {ThreadId} with run {RunId}", thread.Id, run.Id);
+        try
+        {
+            var response = evaluationsClient.CreateAgentEvaluation(
+                new AgentEvaluationRequest(run.Id, evaluators, appInsightsConnectionString)
+                {
+                    ThreadId = thread.Id,
+                    SamplingConfiguration = samplingConfig,
+                }
+            );
+            logger.LogInformation("Agent Evaluation created successfully");
+        }
+        catch (Exception)
+        {
+            logger.LogInformation("Agent evaluation request was sampled out");
+        }
     }
 
     private static void OpenBothOutputFiles()

@@ -12,7 +12,7 @@ public class ContentUnderstandingTool
     private readonly AzureContentUnderstandingClient _client;
     private readonly string _schemaFilePath;
     private readonly ILogger<ContentUnderstandingTool> _logger;
-    private string _currentAnalyzerId;
+    private string _currentAnalyzerId = "";
 
     public ContentUnderstandingTool(IOptions<Settings> settings, ILogger<ContentUnderstandingTool> logger)
     {
@@ -63,6 +63,9 @@ public class ContentUnderstandingTool
     [Description("Opens the file and returns the file content.")]
     public async Task<string> ReadAsync(string filepath)
     {
+        var currentDir = Directory.GetCurrentDirectory();
+        Console.WriteLine($"Current directory: {currentDir}");
+        Console.WriteLine($"Reading file: {filepath}");
         return await File.ReadAllTextAsync(filepath);
     }
 }
