@@ -16,6 +16,9 @@ using Microsoft.SemanticKernel.Agents.Orchestration;
 using Microsoft.SemanticKernel.Agents.Orchestration.Sequential;
 using Microsoft.SemanticKernel.Agents.Runtime;
 using Microsoft.SemanticKernel.Agents.Runtime.InProcess;
+using Polly;
+using Polly.Fallback;
+using Polly.Retry;
 
 namespace ContractAnalysis;
 
@@ -69,12 +72,37 @@ public class Program
             List<string> input = new() {
                  "'../assets/input/123LogisticsContract.md'",
                 "'../assets/input/ABCContract.pdf'" };
-            OrchestrationResult<string> result = await orchestration.InvokeAsync(input, runtime);
+            // Polly retry and fallback policy for orchestration throttling and transient errors
+            var orchestrationRetryPolicy = Polly.Policy
+                .Handle<Exception>(ex =>
+                    IsThrottlingException(ex)
+                )
+                .WaitAndRetryAsync(5, attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
+                    (exception, timeSpan, retryCount, context) =>
+                    {
+                        if (exception is Azure.RequestFailedException rfe && rfe.Status == 429 && rfe.Message.Contains("Received too many requests in a short amount of time"))
+                        {
+                            logger.LogDebug($"Suppressed 429 log: {rfe.Message}");
+                        }
+                        else
+                        {
+                            logger.LogWarning(exception, $"Orchestration retry {retryCount} after {timeSpan.TotalSeconds}s due to throttling or transient error.");
+                        }
+                    });
 
-            string text = await result.GetValueAsync();
-            await runtime.RunUntilIdleAsync();
+            OrchestrationResult<string>? result = null;
+            string? text = null;
+            await orchestrationRetryPolicy.ExecuteAsync(async () =>
+            {
+                result = await orchestration.InvokeAsync(input, runtime).AsTask();
+                text = await result.GetValueAsync();
+                await runtime.RunUntilIdleAsync();
+            });
 
-            await StartEvaluationSamplingAsync(analysisAgentAzureAIAgent, result.Topic, runtime, services);
+            if (result != null)
+            {
+                await StartEvaluationSamplingAsync(analysisAgentAzureAIAgent, result.Topic, runtime, services);
+            }
 
             foreach (ChatMessageContent message in monitor.History)
             {
@@ -122,7 +150,34 @@ public class Program
         var run = (await agentsClient.Runs.GetRunsAsync(thread.Id).ToListAsync()).First();
 
         logger.LogInformation("Try creating Agent Evaluation for thread {ThreadId} with run {RunId}", thread.Id, run.Id);
-        try
+
+        // Polly retry and fallback policy for throttling and transient errors
+        var retryPolicy = Polly.Policy
+            .Handle<Exception>(ex =>
+                IsThrottlingException(ex)
+            )
+            .WaitAndRetry(5, attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
+                (exception, timeSpan, retryCount, context) =>
+                {
+                    if (exception is Azure.RequestFailedException rfe && rfe.Status == 429 && rfe.Message.Contains("Received too many requests in a short amount of time"))
+                    {
+                        // Suppress or log at Debug level
+                        logger.LogDebug($"Suppressed 429 log: {rfe.Message}");
+                    }
+                    else
+                    {
+                        logger.LogWarning(exception, $"Retry {retryCount} after {timeSpan.TotalSeconds}s due to throttling or transient error.");
+                    }
+                });
+
+        var fallbackPolicy = Polly.Policy
+            .Handle<Exception>()
+            .Fallback(() =>
+            {
+                logger.LogError("Agent evaluation request failed after retries due to persistent throttling or error.");
+            });
+
+        fallbackPolicy.Wrap(retryPolicy).Execute(() =>
         {
             var response = evaluationsClient.CreateAgentEvaluation(
                 new AgentEvaluationRequest(run.Id, evaluators, appInsightsConnectionString)
@@ -132,11 +187,7 @@ public class Program
                 }
             );
             logger.LogInformation("Agent Evaluation created successfully");
-        }
-        catch (Exception)
-        {
-            logger.LogInformation("Agent evaluation request was sampled out");
-        }
+        });
     }
 
     private static void OpenBothOutputFiles()
@@ -191,4 +242,27 @@ public class Program
                     return new AIProjectClient(new Uri(settings.AzureAiAgentEndpoint), credential);
                 });
             });
+
+    // Helper method for throttling detection
+    static bool IsThrottlingException(Exception ex)
+    {
+        if (ex is AggregateException aggEx)
+        {
+            return aggEx.InnerExceptions.Any(IsThrottlingException);
+        }
+        if (ex is Azure.RequestFailedException rfe && (rfe.Status == 429 || rfe.Status == 503 || rfe.Status == 408))
+            return true;
+        if (ex is Microsoft.SemanticKernel.KernelException kernelEx &&
+            (kernelEx.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+            || kernelEx.Message.Contains("Rate limit is exceeded", StringComparison.OrdinalIgnoreCase)
+            || kernelEx.Message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase)
+            || kernelEx.Message.Contains("throttle", StringComparison.OrdinalIgnoreCase)))
+            return true;
+        var msg = ex.Message;
+        return msg.Contains("429")
+            || msg.Contains("Too Many Requests")
+            || msg.Contains("throttle", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Rate limit is exceeded", StringComparison.OrdinalIgnoreCase);
+    }
 }

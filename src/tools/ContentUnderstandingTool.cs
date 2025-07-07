@@ -45,6 +45,7 @@ public class ContentUnderstandingTool
         _logger.LogInformation($"Starting for: {filepath}");
 
         // Analyze file
+        filepath = filepath.Trim('\''); // Remove quotes if present
         var response = await _client.BeginAnalyzeAsync(_currentAnalyzerId, filepath);
         var result = await _client.PollResultAsync(response);
 
@@ -63,6 +64,7 @@ public class ContentUnderstandingTool
     [Description("Opens the file and returns the file content.")]
     public async Task<string> ReadAsync(string filepath)
     {
+        filepath = filepath.Trim('\''); // Remove quotes if present
         var currentDir = Directory.GetCurrentDirectory();
         Console.WriteLine($"Current directory: {currentDir}");
         Console.WriteLine($"Reading file: {filepath}");
@@ -124,6 +126,12 @@ public class AzureContentUnderstandingClient
         };
 
         var response = await _httpClient.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorContent = await response.Content.ReadAsStringAsync();
+            _logger.LogError($"Failed to create analyzer {analyzerId}. Response: {errorContent}");
+            throw new HttpRequestException($"Failed to create analyzer {analyzerId}. Status code: {response.StatusCode}");
+        }
         response.EnsureSuccessStatusCode();
 
         _logger.LogInformation($"Analyzer {analyzerId} create request accepted.");
@@ -167,6 +175,12 @@ public class AzureContentUnderstandingClient
         };
 
         var response = await _httpClient.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorContent = await response.Content.ReadAsStringAsync();
+            _logger.LogError($"Failed to analyze file {fileLocation} with analyzer {analyzerId}. Response: {errorContent}");
+            throw new HttpRequestException($"Failed to analyze file {fileLocation} with analyzer {analyzerId}. Status code: {response.StatusCode}");
+        }
         response.EnsureSuccessStatusCode();
 
         _logger.LogInformation($"Analyzing file {fileLocation} with analyzer: {analyzerId}");
